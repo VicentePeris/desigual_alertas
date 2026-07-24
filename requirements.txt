@@ -1,0 +1,19 @@
+# Google Cloud Function dependencies
+# Deploy with: gcloud functions deploy <FUNCTION_NAME> \
+#   --gen2 --runtime python312 --trigger-http \
+#   --entry-point main --source . \
+#   --set-env-vars ACCESS_TOKEN=<token>,SITE_ID=<site_id>
+
+functions-framework==3.*
+
+# BigQuery
+google-cloud-bigquery==3.*
+google-cloud-bigquery-storage==2.*   # optional: enables faster BQ reads (Arrow/Avro)
+pyarrow>=15.0.0                      # required by load_table_from_dataframe
+
+# HTTP + data
+requests==2.*
+pandas==2.*
+
+# Local development only (not needed in Cloud Functions)
+python-dotenv==1.*
