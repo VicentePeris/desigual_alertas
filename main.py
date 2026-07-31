@@ -10,13 +10,24 @@ load_dotenv()
 
 app = Flask(__name__)
 
+
+def get_env_int(name, default):
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"La variable de entorno {name} no es un número válido: {value}") from exc
+
+
 # Configuración mediante Variables de Entorno de Cloud Run
 PROJECT_ID = os.environ.get("PROJECT_ID")
 DATASET_ID = os.environ.get("DATASET_ID")
 TIMEZONE = os.environ.get("TIMEZONE", "Europe/Madrid")
 
 SMTP_SERVER = os.environ.get("SMTP_SERVER")
-SMTP_PORT = int(os.environ.get("SMTP_PORT", 587))
+SMTP_PORT = get_env_int("SMTP_PORT", 587)
 SMTP_USER = os.environ.get("SMTP_USER") or os.environ.get("EMAIL_FROM")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD") or os.environ.get("SENDER_PASS")
 EMAIL_FROM = os.environ.get("EMAIL_FROM")
@@ -51,6 +62,11 @@ def enviar_alerta(anomalias, hora_analizada):
         print("Email enviado correctamente.")
     except Exception as e:
         print(f"Error crítico al enviar el email: {e}")
+
+@app.route("/health", methods=["GET"])
+def health_check():
+    return jsonify({"status": "ok"}), 200
+
 
 @app.route("/", methods=["GET", "POST"])
 def ejecutar_control():
