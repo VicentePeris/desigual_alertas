@@ -1,4 +1,4 @@
-# Desigual Alertas
+# Desigual Alertas - Cloud Function
 
 Servicio para detectar anomalías en eventos de GA4 almacenados en BigQuery y enviar alertas por correo electrónico cuando se detectan patrones sospechosos.
 
@@ -6,14 +6,15 @@ Servicio para detectar anomalías en eventos de GA4 almacenados en BigQuery y en
 
 Este proyecto consulta los eventos intradía de Google Analytics 4 desde BigQuery, analiza si alguno de los mercados configurados presenta valores anormales en una hora concreta y envía un correo SMTP con el resumen de la incidencia.
 
-La aplicación expone un endpoint HTTP en la ruta `/` que ejecuta la comprobación y, si encuentra anomalías, envía el aviso.
+La aplicación expone un endpoint HTTP que ejecuta la comprobación y, si encuentra anomalías, envía el aviso por correo.
 
 ## Funcionalidades
 
 - Consulta eventos de BigQuery para la fecha actual.
 - Detecta posibles anomalías por mercado y hora.
 - Envía alertas por correo usando SMTP.
-- Puede ejecutarse localmente, en Docker o desplegarse en Cloud Run.
+- Desplegable en Google Cloud Functions (Gen 2).
+- Compatible con Cloud Scheduler para ejecuciones programadas.
 
 ## Requisitos
 
@@ -21,10 +22,11 @@ La aplicación expone un endpoint HTTP en la ruta `/` que ejecuta la comprobaci�
 - Acceso a BigQuery con credenciales válidas de Google Cloud.
 - Un servidor SMTP configurado para enviar correos.
 - Variables de entorno definidas correctamente.
+- `gcloud` CLI (para desplegar en Cloud Functions).
 
 ## Variables de entorno
 
-Configura las siguientes variables antes de ejecutar la aplicación:
+Configura las siguientes variables antes de desplegar:
 
 - `PROJECT_ID`: ID del proyecto de Google Cloud.
 - `DATASET_ID`: Dataset donde se almacenan los eventos de GA4.
@@ -34,8 +36,7 @@ Configura las siguientes variables antes de ejecutar la aplicación:
 - `SMTP_USER`: Usuario SMTP.
 - `SMTP_PASSWORD` o `SENDER_PASS`: Contraseña SMTP.
 - `EMAIL_FROM`: Remitente del correo.
-- `EMAIL_TO`: Destinatario o destinatarios del correo.
-- `PORT`: Puerto HTTP para ejecución local o Cloud Run. Por defecto: `8080`.
+- `EMAIL_TO`: Destinatario del correo.
 
 ## Instalación local
 
@@ -47,6 +48,71 @@ pip install -r requirements.txt
 ```
 
 Crea un archivo `.env` con tus variables de entorno si vas a ejecutar la app localmente.
+
+## Desplegar en Cloud Functions
+
+### Con Google Cloud CLI
+
+```bash
+gcloud functions deploy desigual_alertas \
+  --gen2 \
+  --runtime python311 \
+  --trigger-http \
+  --entry-point main \
+  --source . \
+  --set-env-vars \
+    PROJECT_ID=<PROJECT_ID>,\
+    DATASET_ID=<DATASET_ID>,\
+    TIMEZONE=Europe/Madrid,\
+    SMTP_SERVER=<SMTP_SERVER>,\
+    SMTP_PORT=587,\
+    SMTP_USER=<SMTP_USER>,\
+    SMTP_PASSWORD=<PASSWORD>,\
+    EMAIL_FROM=<EMAIL_FROM>,\
+    EMAIL_TO=<EMAIL_TO>
+```
+
+### Programar ejecución con Cloud Scheduler
+
+Crea un job en Cloud Scheduler para ejecutar la función cada hora:
+
+```bash
+gcloud scheduler jobs create http desigual_alertas_schedule \
+  --schedule="0 * * * *" \
+  --uri=https://<REGION>-<PROJECT_ID>.cloudfunctions.net/desigual_alertas \
+  --http-method=POST \
+  --location=<REGION>
+```
+
+## Ejecución local
+
+Para probar localmente:
+
+```bash
+functions-framework --target=main --debug --port=8080
+```
+
+Luego accede a `http://localhost:8080`
+
+## Testing
+
+Para enviar una solicitud de prueba:
+
+```bash
+curl -X POST http://localhost:8080
+```
+
+Espera una respuesta JSON similar a:
+
+```json
+{"status": "ok", "message": "Métricas correctas en todos los mercados."}
+```
+
+o
+
+```json
+{"status": "alerta_enviada", "Mercados_afectados": 2}
+```
 
 ## Ejecución local
 

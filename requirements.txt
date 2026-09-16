@@ -1,9 +1,10 @@
 # Google Cloud Function dependencies
-# Deploy with: gcloud functions deploy <FUNCTION_NAME> \
-#   --gen2 --runtime python312 --trigger-http \
+# Deploy with: gcloud functions deploy desigual_alertas \
+#   --gen2 --runtime python311 --trigger-http \
 #   --entry-point main --source . \
-#   --set-env-vars ACCESS_TOKEN=<token>,SITE_ID=<site_id>
+#   --set-env-vars PROJECT_ID=<PROJECT_ID>,DATASET_ID=<DATASET_ID>,...
 
+# Cloud Functions Framework
 functions-framework==3.*
 
 # BigQuery
@@ -11,9 +12,9 @@ google-cloud-bigquery==3.*
 google-cloud-bigquery-storage==2.*   # optional: enables faster BQ reads (Arrow/Avro)
 pyarrow>=15.0.0                      # required by load_table_from_dataframe
 
-# HTTP + data
-requests==2.*
-pandas==2.*
+# Email support (SMTP)
+secure-smtplib==0.1.1
 
-# Local development only (not needed in Cloud Functions)
+# Local development only (not needed in Cloud Functions runtime)
 python-dotenv==1.*
+

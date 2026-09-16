@@ -1,17 +1,21 @@
 import os
 import smtplib
+import json
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from flask import Flask, jsonify
 from google.cloud import bigquery
 from dotenv import load_dotenv
 
 load_dotenv()
 
-app = Flask(__name__)
+
+def _make_json_response(status_code, data):
+    """Helper para crear respuestas JSON compatibles con Cloud Functions."""
+    return json.dumps(data), status_code, {"Content-Type": "application/json"}
 
 
 def get_env_int(name, default):
+    """Obtiene una variable de entorno como entero."""
     value = os.environ.get(name)
     if value is None or value == "":
         return default
@@ -31,23 +35,39 @@ SMTP_PORT = get_env_int("SMTP_PORT", 587)
 SMTP_USER = os.environ.get("SMTP_USER") or os.environ.get("EMAIL_FROM")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD") or os.environ.get("SENDER_PASS")
 EMAIL_FROM = os.environ.get("EMAIL_FROM")
-EMAIL_TO = os.environ.get("EMAIL_TO")
+EMAIL_TO = [email.strip() for email in (os.environ.get("EMAIL_TO") or "").split(",") if email.strip()]
 
 def enviar_alerta(anomalias, hora_analizada):
     """Configura y envía el correo electrónico usando SMTP seguro."""
+    if not EMAIL_TO:
+        raise RuntimeError("La variable de entorno EMAIL_TO no contiene destinatarios válidos.")
+
     msg = MIMEMultipart()
     msg['From'] = EMAIL_FROM
-    msg['To'] = EMAIL_TO
-    msg['Subject'] = f"ALERTA GA4: Eventos a 0 - Hora: {hora_analizada}"
+    msg['To'] = ", ".join(EMAIL_TO)
+    msg['Subject'] = f"PALLADIUM - ALERTA GA4: Eventos a 0 - Hora: {hora_analizada}"
 
     # Construimos el cuerpo del mensaje en texto plano
     body = f"Se han detectado anomalías de tracking en la hora {hora_analizada} (Zona: {TIMEZONE}):\n\n"
-    for store in anomalias:
-        body += f" Mercado: {store['store']}\n"
-        body += f"  - view_item: {store['view_item_count']}\n"
-        body += f"  - add_to_cart: {store['add_to_cart_count']}\n"
-        body += f"  - begin_checkout: {store['begin_checkout_count']}\n"
-        body += f"  - purchase: {store['purchase_count']}\n"
+    for hostname in anomalias:
+        body += f" Dominio: {hostname['hostname']}\n"
+        
+        # Eventos a mostrar con detección de ceros
+        eventos = [
+            ('page_view', hostname['page_view_count']),
+            ('view_item', hostname['view_item_count']),
+            ('add_to_cart', hostname['add_to_cart_count']),
+            ('begin_checkout', hostname['begin_checkout_count']),
+            ('search', hostname['search_count']),
+            ('purchase', hostname['purchase_count']),
+        ]
+        
+        for evento_name, evento_count in eventos:
+            if evento_count == 0:
+                body += f"  *** {evento_name}: {evento_count} <<< ¡ALERTA: SIN EVENTOS! ***\n"
+            else:
+                body += f"  - {evento_name}: {evento_count}\n"
+        
         body += "-------------------------------------------\n"
     
     body += "\nPor favor, revisa si hay un fallo en el tagueo de la web."
@@ -63,13 +83,17 @@ def enviar_alerta(anomalias, hora_analizada):
     except Exception as e:
         print(f"Error crítico al enviar el email: {e}")
 
-@app.route("/health", methods=["GET"])
-def health_check():
-    return jsonify({"status": "ok"}), 200
 
-
-@app.route("/", methods=["GET", "POST"])
-def ejecutar_control():
+def main(request):
+    """
+    Función principal para Cloud Function (HTTP trigger).
+    
+    Args:
+        request: Objeto de solicitud de Flask/Cloud Functions
+        
+    Returns:
+        Tupla (response_body, status_code, headers)
+    """
     client = bigquery.Client()
 
     # Consulta con HAVING para filtrar anomalías directamente en BigQuery
@@ -77,12 +101,30 @@ def ejecutar_control():
     WITH base_datos AS (
       SELECT
         event_name,
-        (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'store') AS store,
-        DATETIME_TRUNC(DATETIME(TIMESTAMP_MICROS(event_timestamp), '{TIMEZONE}'), HOUR) AS event_hour
+        NET.HOST(
+    (
+      SELECT value.string_value
+      FROM UNNEST(event_params)
+      WHERE key = 'page_location'
+    ))
+    AS hostname,
+        DATETIME_TRUNC(DATETIME(TIMESTAMP_MICROS(event_timestamp), 'Europe/Madrid'), HOUR) AS event_hour
       FROM
         `{PROJECT_ID}.{DATASET_ID}.events_intraday_*`
       WHERE
         _TABLE_SUFFIX = FORMAT_DATE('%Y%m%d', CURRENT_DATE('{TIMEZONE}'))
+    AND EXISTS(
+    SELECT 1
+    FROM UNNEST(event_params)
+    WHERE key = 'uri_limpia' AND value.string_value LIKE '%bookcore%'
+  )
+  AND NET.HOST(
+    (
+      SELECT value.string_value
+      FROM UNNEST(event_params)
+      WHERE key = 'page_location'
+    ))
+    LIKE '%palladiumhotelgroup.com%'
     ),
     calcular_hora_objetivo AS (
       SELECT
@@ -91,26 +133,30 @@ def ejecutar_control():
         base_datos
     )
     SELECT
-      COALESCE(store, '(no_definido)') AS store,
+      hostname,
       (SELECT target_hour FROM calcular_hora_objetivo) AS hora_analizada,
       COUNTIF(event_name = 'page_view') AS page_view_count,
       COUNTIF(event_name = 'view_item') AS view_item_count,
+      COUNTIF(event_name = 'search') AS search_count,
       COUNTIF(event_name = 'add_to_cart') AS add_to_cart_count,
       COUNTIF(event_name = 'begin_checkout') AS begin_checkout_count,
       COUNTIF(event_name = 'purchase') AS purchase_count
     FROM
       base_datos
     WHERE
-      event_hour = (SELECT target_hour FROM calcular_hora_objetivo) AND store IN ('DE','ES','US','FR','PL','IT','NL','GB','MX','CA','AT','PT','JP','BE','CZ','CH','SE','HR')
+      event_hour = (SELECT target_hour FROM calcular_hora_objetivo)
     GROUP BY 1
     HAVING 
       page_view_count = 0
+      OR (view_item_count = 0)
+      OR (add_to_cart_count = 0)
       OR (view_item_count > 30 AND add_to_cart_count = 0)
       OR (begin_checkout_count > 5 AND purchase_count = 0)
       OR (purchase_count > 0 AND (add_to_cart_count = 0 OR view_item_count = 0 OR begin_checkout_count = 0))
     """
 
     try:
+        print(query)
         query_job = client.query(query)
         resultados = list(query_job.result())
 
@@ -120,12 +166,18 @@ def ejecutar_control():
             anomalias = [dict(row) for row in resultados]
             
             enviar_alerta(anomalias, hora_analizada)
-            return jsonify({"status": "alerta_enviada", "Mercados_afectados": len(anomalias)}), 200
+            return _make_json_response(200, {
+                "status": "alerta_enviada", 
+                "Mercados_afectados": len(anomalias)
+            })
         
-        return jsonify({"status": "ok", "message": "Métricas correctas en todos los mercados."}), 200
+        return _make_json_response(200, {
+            "status": "ok", 
+            "message": "Métricas correctas en todos los mercados."
+        })
 
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+        return _make_json_response(500, {
+            "status": "error", 
+            "message": str(e)
+        })
