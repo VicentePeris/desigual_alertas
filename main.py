@@ -4,9 +4,9 @@ import json
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from google.cloud import bigquery
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 
-load_dotenv()
+# load_dotenv()
 
 
 def _make_json_response(status_code, data):
@@ -45,21 +45,22 @@ def enviar_alerta(anomalias, hora_analizada):
     msg = MIMEMultipart()
     msg['From'] = EMAIL_FROM
     msg['To'] = ", ".join(EMAIL_TO)
-    msg['Subject'] = f"PALLADIUM - ALERTA GA4: Eventos a 0 - Hora: {hora_analizada}"
-
+    msg['Subject'] = f"ALERTA GA4: Eventos a 0 - Hora: {hora_analizada}"
+    #print(EMAIL_FROM)
+    #print(EMAIL_TO)
     # Construimos el cuerpo del mensaje en texto plano
     body = f"Se han detectado anomalías de tracking en la hora {hora_analizada} (Zona: {TIMEZONE}):\n\n"
-    for hostname in anomalias:
-        body += f" Dominio: {hostname['hostname']}\n"
-        
-        # Eventos a mostrar con detección de ceros
+    for store in anomalias:
+        body += f" Mercado: {store['store']}\n"
+         # Eventos a mostrar con detección de ceros
         eventos = [
-            ('page_view', hostname['page_view_count']),
-            ('view_item', hostname['view_item_count']),
-            ('add_to_cart', hostname['add_to_cart_count']),
-            ('begin_checkout', hostname['begin_checkout_count']),
-            ('search', hostname['search_count']),
-            ('purchase', hostname['purchase_count']),
+            ('page_view', store['page_view_count']),
+            ('view_item', store['view_item_count']),
+            ('add_to_cart', store['add_to_cart_count']),
+            ('begin_checkout', store['begin_checkout_count']),
+            ('select_size', store['select_size_count']),
+            ('new_register', store['new_register_count']),
+            ('purchase', store['purchase_count']),
         ]
         
         for evento_name, evento_count in eventos:
@@ -67,7 +68,6 @@ def enviar_alerta(anomalias, hora_analizada):
                 body += f"  *** {evento_name}: {evento_count} <<< ¡ALERTA: SIN EVENTOS! ***\n"
             else:
                 body += f"  - {evento_name}: {evento_count}\n"
-        
         body += "-------------------------------------------\n"
     
     body += "\nPor favor, revisa si hay un fallo en el tagueo de la web."
@@ -94,6 +94,7 @@ def main(request):
     Returns:
         Tupla (response_body, status_code, headers)
     """
+    print("start main")
     client = bigquery.Client()
 
     # Consulta con HAVING para filtrar anomalías directamente en BigQuery
@@ -101,30 +102,12 @@ def main(request):
     WITH base_datos AS (
       SELECT
         event_name,
-        NET.HOST(
-    (
-      SELECT value.string_value
-      FROM UNNEST(event_params)
-      WHERE key = 'page_location'
-    ))
-    AS hostname,
-        DATETIME_TRUNC(DATETIME(TIMESTAMP_MICROS(event_timestamp), 'Europe/Madrid'), HOUR) AS event_hour
+        (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'store') AS store,
+        DATETIME_TRUNC(DATETIME(TIMESTAMP_MICROS(event_timestamp), '{TIMEZONE}'), HOUR) AS event_hour
       FROM
         `{PROJECT_ID}.{DATASET_ID}.events_intraday_*`
       WHERE
         _TABLE_SUFFIX = FORMAT_DATE('%Y%m%d', CURRENT_DATE('{TIMEZONE}'))
-    AND EXISTS(
-    SELECT 1
-    FROM UNNEST(event_params)
-    WHERE key = 'uri_limpia' AND value.string_value LIKE '%bookcore%'
-  )
-  AND NET.HOST(
-    (
-      SELECT value.string_value
-      FROM UNNEST(event_params)
-      WHERE key = 'page_location'
-    ))
-    LIKE '%palladiumhotelgroup.com%'
     ),
     calcular_hora_objetivo AS (
       SELECT
@@ -133,30 +116,34 @@ def main(request):
         base_datos
     )
     SELECT
-      hostname,
+      COALESCE(store, '(no_definido)') AS store,
       (SELECT target_hour FROM calcular_hora_objetivo) AS hora_analizada,
       COUNTIF(event_name = 'page_view') AS page_view_count,
       COUNTIF(event_name = 'view_item') AS view_item_count,
-      COUNTIF(event_name = 'search') AS search_count,
       COUNTIF(event_name = 'add_to_cart') AS add_to_cart_count,
       COUNTIF(event_name = 'begin_checkout') AS begin_checkout_count,
+      COUNTIF(event_name = 'select_size') AS select_size_count,
+      COUNTIF(event_name = 'new_register') AS new_register_count,
       COUNTIF(event_name = 'purchase') AS purchase_count
     FROM
       base_datos
     WHERE
-      event_hour = (SELECT target_hour FROM calcular_hora_objetivo)
+      event_hour = (SELECT target_hour FROM calcular_hora_objetivo) AND store IN ('DE','ES','US','FR','PL','IT')
     GROUP BY 1
     HAVING 
       page_view_count = 0
       OR (view_item_count = 0)
       OR (add_to_cart_count = 0)
+      OR (select_size_count = 0)
+      OR (begin_checkout_count = 0)
+      OR (new_register_count = 0)
       OR (view_item_count > 30 AND add_to_cart_count = 0)
       OR (begin_checkout_count > 5 AND purchase_count = 0)
-      OR (purchase_count > 0 AND (add_to_cart_count = 0 OR view_item_count = 0 OR begin_checkout_count = 0))
+      OR (purchase_count = 0 AND (add_to_cart_count > 15 OR view_item_count > 100 OR begin_checkout_count > 2))
+      OR (purchase_count > 0 AND (add_to_cart_count < purchase_count OR view_item_count < purchase_count OR begin_checkout_count < purchase_count))
     """
-
+    print(query)
     try:
-        print(query)
         query_job = client.query(query)
         resultados = list(query_job.result())
 
